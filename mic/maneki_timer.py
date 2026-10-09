@@ -7,8 +7,10 @@ import RPi.GPIO as GPIO
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
 from time_parser import format_duration, parse_duration
+from whiskers import lit_count
 
 LED_PIN = 25
+WHISKER_PINS = [17, 27, 22, 26, 20, 21]  # ひげLED（物理ピン 11/13/15/37/38/40）
 MODEL_PATH = os.path.expanduser("~/models/vosk-model-small-ja-0.22")
 VOICE_PATH = os.path.expanduser("~/models/mei/mei_happy.htsvoice")
 DIC_PATH = "/var/lib/mecab/dic/open-jtalk/naist-jdic"
@@ -50,6 +52,12 @@ def speak(text):
     subprocess.run(["aplay", "-D", SPEAKER_DEVICE, "-q", wav], check=True)
 
 
+def show_whiskers(n):
+    """ひげを左から n 本つけ、残りを消す"""
+    for i, pin in enumerate(WHISKER_PINS):
+        GPIO.output(pin, GPIO.HIGH if i < n else GPIO.LOW)
+
+
 def talk(mic, text):
     """自分の声を聞き取らないよう、マイクを止めてからしゃべり、新しいマイクを返す"""
     mic.terminate()
@@ -60,6 +68,8 @@ def talk(mic, text):
 SetLogLevel(-1)
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(LED_PIN, GPIO.OUT)
+for pin in WHISKER_PINS:
+    GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
 
 model = Model(MODEL_PATH)
 wake_recognizer = make_recognizer(model, WAKE_WORDS)
@@ -68,7 +78,9 @@ time_recognizer = make_recognizer(model, TIME_WORDS)
 mic = start_mic()
 listening_until = None  # None のときは呼びかけ待ち
 timer_end = None        # None のときはタイマーが動いていない
+timer_total = 0
 timer_label = ""
+whiskers_on = 0
 
 print("「招き猫」と呼んでください（Ctrl+Cで終了）")
 
@@ -77,6 +89,14 @@ try:
         data = mic.stdout.read(4000)
         if not data:
             break
+
+        # 残り時間に合わせてひげを1本ずつ消す
+        if timer_end is not None:
+            n = lit_count(timer_end - time.monotonic(), timer_total, len(WHISKER_PINS))
+            if n != whiskers_on:
+                show_whiskers(n)
+                whiskers_on = n
+                print("  ひげ残り%d本" % n)
 
         # タイマー終了
         if timer_end is not None and time.monotonic() >= timer_end:
@@ -119,7 +139,10 @@ try:
 
             # しゃべり終わってからタイマー開始
             GPIO.output(LED_PIN, GPIO.HIGH)
-            print("→ LED ON（%s）" % timer_label)
+            show_whiskers(len(WHISKER_PINS))
+            whiskers_on = len(WHISKER_PINS)
+            print("→ LED ON、ひげ%d本（%s）" % (whiskers_on, timer_label))
+            timer_total = seconds
             timer_end = time.monotonic() + seconds
 
             wake_recognizer.Reset()
@@ -131,4 +154,5 @@ except KeyboardInterrupt:
 finally:
     mic.terminate()
     GPIO.output(LED_PIN, GPIO.LOW)
+    show_whiskers(0)
     GPIO.cleanup()
