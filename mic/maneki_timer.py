@@ -10,14 +10,14 @@ from time_parser import format_duration, parse_duration
 from whiskers import lit_count
 
 LED_PIN = 25
-WHISKER_PINS = [17, 27, 22, 26, 20, 21]  # ひげLED（物理ピン 11/13/15/37/38/40）
+WHISKER_PINS = [17, 27, 16, 26, 20, 21]  # ひげLED（物理ピン 11/13/36/37/38/40、15番は Build HAT が使う）
 MODEL_PATH = os.path.expanduser("~/models/vosk-model-small-ja-0.22")
 VOICE_PATH = os.path.expanduser("~/models/mei/mei_happy.htsvoice")
 DIC_PATH = "/var/lib/mecab/dic/open-jtalk/naist-jdic"
 MIC_DEVICE = "plughw:CARD=Device,DEV=0"  # USBマイク（arecord -l で確認）
 SPEAKER_DEVICE = "plughw:CARD=Headphones,DEV=0"  # ラズパイのイヤホン端子（aplay -l で確認）
 SAMPLE_RATE = 16000
-LISTEN_SECONDS = 8  # 呼ばれてから時間を待つ長さ
+LISTEN_SECONDS = 10  # 呼ばれてから時間を待つ長さ
 
 WAKE_WORDS = ["まねきねこ", "招き猫"]
 TIME_WORDS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "百",
@@ -61,6 +61,7 @@ def show_whiskers(n):
 def talk(mic, text):
     """自分の声を聞き取らないよう、マイクを止めてからしゃべり、新しいマイクを返す"""
     mic.terminate()
+    mic.wait()
     speak(text)
     return start_mic()
 
@@ -122,16 +123,22 @@ try:
 
         else:
             # 時間の聞き取り中
-            if time.monotonic() > listening_until:
-                print("時間が聞き取れなかったので、呼びかけ待ちに戻ります")
-                wake_recognizer.Reset()
-                listening_until = None
+            timed_out = time.monotonic() > listening_until
+            if time_recognizer.AcceptWaveform(data):
+                text = json.loads(time_recognizer.Result())["text"]
+            elif timed_out:
+                # 話している途中で時間切れになっても、そこまでに聞き取れた言葉で判断する
+                text = json.loads(time_recognizer.FinalResult())["text"]
+            else:
                 continue
-            if not time_recognizer.AcceptWaveform(data):
-                continue
-            text = json.loads(time_recognizer.Result())["text"]
             seconds = parse_duration(text)
+            if text:
+                print("聞き取り: %s → %s" % (text, "%d秒" % seconds if seconds else "時間なし"))
             if not seconds:
+                if timed_out:
+                    print("時間が聞き取れなかったので、呼びかけ待ちに戻ります")
+                    wake_recognizer.Reset()
+                    listening_until = None
                 continue
             timer_label = format_duration(seconds)
             print("認識: %s → %d秒" % (text, seconds))

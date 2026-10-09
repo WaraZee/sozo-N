@@ -3,7 +3,7 @@ import time
 import RPi.GPIO as GPIO
 
 # ひげLED（バーグラフの20〜25列）につないだピン
-WHISKER_PINS = [17, 27, 22, 26, 20, 21]
+WHISKER_PINS = [17, 27, 16, 26, 20, 21]
 
 GPIO.setmode(GPIO.BCM)
 for pin in WHISKER_PINS:
