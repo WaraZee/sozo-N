@@ -12,15 +12,11 @@ Usage (activate the existing camera-env first):
   python camera_sleep.py --face-only --headless --duration 20 --snapshot
   python camera_sleep.py --headless --duration 30 --snapshot
   python camera_sleep.py                 # Pi desktop only, q to close
-  python camera_sleep.py --stream --headless # Windows VLC/browser via SSH tunnel
 
 Stop VLC/libcamera-vid before running. No GPIO motor or bell is controlled.
 """
 
 import argparse
-import http.server
-import socket
-import threading
 import csv
 import datetime as dt
 import math
@@ -41,7 +37,6 @@ UNKNOWN_GRACE = 0.4         # Hold prior evidence <= 0.4 s; do not count blind t
 MAX_FRAME_GAP = 0.8         # Long stalled frame should not count as continued closure
 REPORT_EVERY = 5.0
 SNAPSHOT_EVERY = 1.0
-JPEG_QUALITY = 75            # MJPEG quality for Pi 4, balance detail / CPU
 
 LEFT_EYE = (362, 385, 387, 263, 373, 380)
 RIGHT_EYE = (33, 160, 158, 133, 153, 144)
@@ -200,167 +195,6 @@ def annotate_face(cv2, frame, landmarks, points_per_eye):
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 225, 0), 2)
 
 
-
-class LiveFrames:
-    """Thread-safe latest JPEG frame buffer for MJPEG clients."""
-
-    def __init__(self):
-        self.condition = threading.Condition()
-        self.jpeg = None
-        self.sequence = 0
-        self.stopped = False
-
-    def publish(self, jpg):
-        with self.condition:
-            self.jpeg = jpg
-            self.sequence += 1
-            self.condition.notify_all()
-
-    def wait_next(self, previous_seq, timeout=2.0):
-        with self.condition:
-            self.condition.wait_for(
-                lambda: self.sequence != previous_seq or self.stopped,
-                timeout=timeout,
-            )
-            return self.sequence, self.jpeg, self.stopped
-
-    def close(self):
-        with self.condition:
-            self.stopped = True
-            self.condition.notify_all()
-
-
-class MjpegHandler(http.server.BaseHTTPRequestHandler):
-    """Serve stream exclusively on Raspberry Pi loopback; access via SSH tunnel."""
-
-    def log_message(self, format, *args):
-        # Suppress verbose connect/disconnect logs for VLC reconnects.
-        return
-
-    def do_GET(self):
-        if self.path in ('/', '/index.html'):
-            page = ("<!doctype html><html lang='ja'><meta charset='UTF-8'>"
-                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                    "<title>EAR Live</title><body style='font-family:sans-serif;"
-                    "background:#141820;color:white;text-align:center'>"
-                    "<h2>Raspberry Pi — Eye Closure Live</h2>"
-                    "<img src='/stream.mjpg' alt='live camera' "
-                    "style='width:100%;max-width:960px;height:auto'>"
-                    "<p>EAR: L/R/average/median · Closed seconds · Status</p></body></html>")
-            data = page.encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.send_header('Content-Length', str(len(data)))
-            self.send_header('Cache-Control', 'no-store')
-            self.end_headers()
-            self.wfile.write(data)
-            return
-        if self.path == '/snapshot.jpg':
-            _, jpeg, _ = self.server.live_frames.wait_next(-1, timeout=0.5)
-            if jpeg is None:
-                self.send_error(503, 'Camera is starting')
-                return
-            self.send_response(200)
-            self.send_header('Content-Type', 'image/jpeg')
-            self.send_header('Content-Length', str(len(jpeg)))
-            self.send_header('Cache-Control', 'no-store')
-            self.end_headers()
-            self.wfile.write(jpeg)
-            return
-        if self.path != '/stream.mjpg':
-            self.send_error(404)
-            return
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.send_header('Pragma', 'no-cache')
-        self.end_headers()
-        sequence = -1
-        try:
-            while True:
-                sequence_next, jpeg, stopped = self.server.live_frames.wait_next(sequence)
-                if stopped:
-                    break
-                if jpeg is None or sequence_next == sequence:
-                    continue
-                sequence = sequence_next
-                self.wfile.write(
-                    b'--frame\r\n'
-                    b'Content-Type: image/jpeg\r\n'
-                    + f'Content-Length: {len(jpeg)}\r\n'.encode('ascii')
-                    + b'\r\n' + jpeg + b'\r\n'
-                )
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout):
-            pass  # VLC/browser closed the stream; keep camera running.
-
-
-class MjpegServer:
-    def __init__(self, port):
-        self.live_frames = LiveFrames()
-        self.httpd = http.server.ThreadingHTTPServer(('127.0.0.1', port), MjpegHandler)
-        self.httpd.live_frames = self.live_frames
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
-        self.thread.start()
-
-    def publish_frame(self, cv2, frame):
-        # All the graphics are already on the BGR frame at this point.
-        ok, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-        if not ok:
-            raise RuntimeError('Failed to JPEG-encode a streaming frame')
-        self.live_frames.publish(jpeg.tobytes())
-
-    def close(self):
-        self.live_frames.close()
-        self.httpd.shutdown()
-        self.httpd.server_close()
-        self.thread.join(timeout=2)
-
-
-def put_label(cv2, image, text, x, y, scale=0.55, color=(255, 255, 255)):
-    cv2.putText(image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
-                scale, (0, 0, 0), 3, cv2.LINE_AA)
-    cv2.putText(image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
-                scale, color, 1, cv2.LINE_AA)
-
-
-def make_dashboard(cv2, frame, state, left, right, avg, smooth, seconds, found, alert):
-    """Draw all detection information on the VIDEO frame (not only terminal)."""
-    colors = {
-        'AWAKE': (70, 210, 90),
-        'BRIEF_CLOSURE': (0, 195, 255),
-        'DROWSY': (0, 145, 255),
-        'POSSIBLE_SLEEP': (45, 55, 245),
-        'UNCERTAIN': (175, 185, 190),
-        'NO_FACE': (175, 185, 190),
-    }
-    state_color = colors.get(state, (175, 185, 190))
-    # Semi-opaque panels; keep user's eyes unobstructed in the center of frame.
-    top = frame[:111].copy()
-    cv2.rectangle(frame, (0, 0), (WIDTH, 110), (15, 20, 30), -1)
-    cv2.addWeighted(frame[:111], 0.84, top, 0.16, 0, frame[:111])
-    put_label(cv2, frame, 'STATUS: ' + state, 12, 26, 0.70, state_color)
-    if avg is None:
-        ear_line = 'EAR left: --   right: --   avg: --   median: --'
-    else:
-        ear_line = (f'EAR L:{left:.3f}  R:{right:.3f}  '
-                    f'avg:{avg:.3f}  med:{smooth:.3f}')
-    put_label(cv2, frame, ear_line, 12, 57, 0.55)
-    put_label(cv2, frame, f'Closed: {seconds:.1f} sec  |  Face: {"YES" if found else "NO"}', 12, 86, 0.60)
-
-    # Closure threshold indicator along top-panel bottom.
-    ratio = max(0.0, min(seconds / ALERT_SECONDS, 1.0))
-    cv2.rectangle(frame, (0, 105), (WIDTH - 1, 110), (80, 80, 80), -1)
-    if ratio:
-        cv2.rectangle(frame, (0, 105), (int((WIDTH - 1) * ratio), 110), state_color, -1)
-
-    if state == 'POSSIBLE_SLEEP':
-        cv2.rectangle(frame, (0, HEIGHT - 52), (WIDTH - 1, HEIGHT - 1), (20, 20, 140), -1)
-        put_label(cv2, frame, 'ALERT - POSSIBLE SLEEP', 16, HEIGHT - 18, 0.79, (255, 255, 255))
-    elif alert:
-        put_label(cv2, frame, 'ALERT', 10, HEIGHT - 18, 0.8, (50, 50, 240))
-    return frame
-
 def self_test():
     # Tests no camera or third-party modules; safe on Windows/CI too.
     import types
@@ -419,7 +253,6 @@ def run(args):
     last_state = None
     last_log_at = None
     last_snapshot_at = None
-    stream_server = None
 
     try:
         config = camera.create_video_configuration(
@@ -439,17 +272,7 @@ def run(args):
             print("CAMERA TEST OK:", path.resolve())
             return 0
 
-        if args.stream:
-            try:
-                stream_server = MjpegServer(args.port)
-            except OSError as exc:
-                raise RuntimeError(
-                    f"Cannot start stream on 127.0.0.1:{args.port}: {exc}; "
-                    "close any other stream using that port"
-                ) from exc
-            print(f"STREAM: http://127.0.0.1:{args.port}/stream.mjpg (VLC over SSH tunnel)")
-            print(f"BROWSER: http://127.0.0.1:{args.port}/ (over SSH tunnel)")
-        if not args.headless and not args.stream:
+        if not args.headless:
             cv2.namedWindow("EAR sleep test", cv2.WINDOW_NORMAL)
             window_created = True
 
@@ -518,8 +341,12 @@ def run(args):
                         if smooth is not None else "EAR --")
             color = ((0, 0, 255) if state == "POSSIBLE_SLEEP" else
                      (0, 165, 255) if state == "DROWSY" else (0, 225, 0))
-            make_dashboard(cv2, frame, state, left, right, avg, smooth, seconds,
-                           found, alert_now)
+            cv2.putText(frame, state, (12, 28), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.72, color, 2, cv2.LINE_AA)
+            cv2.putText(frame, ear_text, (12, 55), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.47, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Observed closed: {seconds:.1f}s", (12, 78),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
 
             due = state != last_state or last_log_at is None or now - last_log_at >= REPORT_EVERY
             if due:
@@ -545,9 +372,6 @@ def run(args):
                     print("WARNING: could not save annotated_latest.jpg", file=sys.stderr)
                 last_snapshot_at = now
 
-            if stream_server is not None:
-                stream_server.publish_frame(cv2, frame)
-
             if window_created:
                 cv2.imshow("EAR sleep test", frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -555,8 +379,6 @@ def run(args):
     except KeyboardInterrupt:
         print("\nCtrl+C: stopped")
     finally:
-        if stream_server is not None:
-            stream_server.close()
         if mesh is not None:
             mesh.close()
         if camera_started:
@@ -577,16 +399,12 @@ def parse_args():
     parser.add_argument("--self-test", action="store_true", help="Test processing logic without camera")
     parser.add_argument("--face-only", action="store_true", help="OpenCV face-only test")
     parser.add_argument("--headless", action="store_true", help="Run without local GUI (SSH)")
-    parser.add_argument("--stream", action="store_true", help="Stream annotated MJPEG for VLC/browser over SSH")
-    parser.add_argument("--port", type=int, default=8888, help="Loopback-only MJPEG HTTP port (default: 8888)")
     parser.add_argument("--duration", type=float, default=0, help="Seconds to run (0 = until Ctrl+C)")
     parser.add_argument("--snapshot", action="store_true", help="Save annotated_latest.jpg every ~1 s")
     parser.add_argument("--log", default="sleep_detection_log_v2.csv", help="CSV output path")
     args = parser.parse_args()
     if args.duration < 0:
         parser.error("--duration must be >= 0")
-    if not 1024 <= args.port <= 65535:
-        parser.error("--port must be between 1024 and 65535")
     return args
 
 
