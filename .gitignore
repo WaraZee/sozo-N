@@ -9,14 +9,14 @@ venv/
 env/
 .env
 
-# 画像（カメラの撮影結果など）
+# 画像
 img/
 images/
 
-# 音声（録音・読み上げのテスト結果）
+# 音声
 *.wav
 
-# 音声認識・音声合成のモデル（大きいので各自ダウンロードする）
+# 音声認識および音声合成のモデル
 models/
 vosk-model-*/
 *.htsvoice
@@ -30,8 +30,8 @@ vosk-model-*/
 Thumbs.db
 desktop.ini
 
-# スライド（GitHubでは共有しない）
+# スライド
 *.pptx
 
-# Office の一時ファイル（ファイルを開いている間にできる）
+# Office の一時ファイル
 ~$*
