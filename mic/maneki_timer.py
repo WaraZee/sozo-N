@@ -1,13 +1,30 @@
+import argparse
 import json
+import math
 import os
 import subprocess
+import sys
 import time
+from pathlib import Path
 
 import RPi.GPIO as GPIO
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
 from time_parser import format_duration, parse_duration
 from whiskers import lit_count
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from arm.motor_control import MotorController
+
+parser = argparse.ArgumentParser(description="音声で設定する招き猫タイマー")
+parser.add_argument(
+    "--motor-seconds", type=float, default=None,
+    help="タイマー終了時にモーターを回す秒数（省略時はモーターを使わない）",
+)
+args = parser.parse_args()
+if args.motor_seconds is not None and (
+        not math.isfinite(args.motor_seconds) or args.motor_seconds <= 0):
+    parser.error("--motor-seconds must be finite and greater than 0")
 
 LED_PIN = 25
 WHISKER_PINS = [17, 27, 16, 26, 20, 21]  # ひげLED（物理ピン 11/13/36/37/38/40、15番は Build HAT が使う）
@@ -85,7 +102,10 @@ whiskers_on = 0
 
 print("「招き猫」と呼んでください（Ctrl+Cで終了）")
 
+motor = None
 try:
+    if args.motor_seconds is not None:
+        motor = MotorController.connect()
     while True:
         data = mic.stdout.read(4000)
         if not data:
@@ -104,6 +124,9 @@ try:
             GPIO.output(LED_PIN, GPIO.LOW)
             print("→ タイマー終了、LED OFF")
             timer_end = None
+            if motor is not None:
+                # 指定時間だけ回して停止してから、終了を音声で知らせる。
+                motor.run_for_seconds(args.motor_seconds)
             mic = talk(mic, FINISHED % timer_label)
             wake_recognizer.Reset()
             time_recognizer.Reset()
@@ -159,6 +182,11 @@ except KeyboardInterrupt:
     pass
 
 finally:
+    if motor is not None:
+        try:
+            motor.stop()
+        except Exception as exc:
+            print("モーターの停止に失敗しました:", exc, file=sys.stderr)
     mic.terminate()
     GPIO.output(LED_PIN, GPIO.LOW)
     show_whiskers(0)
