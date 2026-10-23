@@ -1,0 +1,14 @@
+# 起動時に IP アドレスを読み上げる
+# 入れ方: sudo cp say-ip.service /etc/systemd/system/ && sudo systemctl enable say-ip
+[Unit]
+Description=Say IP address at boot
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=sozo
+ExecStart=/usr/bin/python3 /home/sozo/sozo-N/tools/say_ip.py
+
+[Install]
+WantedBy=multi-user.target
