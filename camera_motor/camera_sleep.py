@@ -14,7 +14,9 @@ Usage (activate the existing camera-env first):
   python camera_sleep.py                 # Pi desktop only, q to close
   python camera_sleep.py --stream --headless # Windows VLC/browser via SSH tunnel
 
-Stop VLC/libcamera-vid before running. No GPIO motor or bell is controlled.
+Stop VLC/libcamera-vid before running.
+POSSIBLE_SLEEP continuously runs the Build HAT motor on port A at speed 20.
+Other states and program shutdown stop the motor. Use --no-motor for camera only.
 """
 
 import argparse
@@ -29,6 +31,10 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+
+# Allow direct execution: python camera_motor/camera_sleep.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from arm.motor_control import SleepMotor
 
 WIDTH, HEIGHT = 640, 480
 CAMERA_FPS = 10              # Same initial target FPS as camera_ear_compare.py
@@ -387,7 +393,29 @@ def self_test():
     clock.update("open", 1.8)
     assert clock.closed_seconds == 0
     assert state_for("closed", 3.1) == "POSSIBLE_SLEEP"
-    print("SELF TEST OK: EAR, median filter, closure timer, state transitions")
+    class FakeMotor:
+        def __init__(self):
+            self.commands = []
+
+        def start(self, speed):
+            self.commands.append(("start", speed))
+
+        def stop(self):
+            self.commands.append(("stop",))
+
+    fake = FakeMotor()
+    motor = SleepMotor(fake)
+    for state in ("AWAKE", "DROWSY", "POSSIBLE_SLEEP", "POSSIBLE_SLEEP", "AWAKE"):
+        motor.update(state)
+    assert fake.commands == [("start", 20), ("stop",)], fake.commands
+    for state in ("NO_FACE", "UNCERTAIN", "BRIEF_CLOSURE", "DROWSY"):
+        motor.update("POSSIBLE_SLEEP")
+        motor.update(state)
+        assert fake.commands[-2:] == [("start", 20), ("stop",)]
+    motor.update("POSSIBLE_SLEEP")
+    motor.stop()  # Same shutdown path used by run()'s finally block.
+    assert not motor.running and fake.commands[-1] == ("stop",)
+    print("SELF TEST OK: EAR, median filter, closure timer, state transitions, motor control")
 
 
 def run(args):
@@ -420,8 +448,11 @@ def run(args):
     last_log_at = None
     last_snapshot_at = None
     stream_server = None
+    sleep_motor = None
 
     try:
+        if not args.no_motor and not args.test and not args.face_only:
+            sleep_motor = SleepMotor.connect()
         config = camera.create_video_configuration(
             main={"size": (WIDTH, HEIGHT), "format": "RGB888"},
             controls={"FrameRate": CAMERA_FPS},
@@ -455,7 +486,8 @@ def run(args):
 
         started_at = time.monotonic()
         print("Started. Ctrl+C to stop; q when using a Pi desktop window.")
-        print("NOTE: Alert is text-only. No GPIO/bell/motor is driven.")
+        print("MOTOR: runs during POSSIBLE_SLEEP; stops in all other states."
+              if sleep_motor is not None else "MOTOR: disabled")
         while True:
             if args.duration and time.monotonic() - started_at >= args.duration:
                 break
@@ -509,10 +541,13 @@ def run(args):
                 seconds = tracker.update(eye_state, now)
                 state = state_for(eye_state, seconds)
 
+            if sleep_motor is not None:
+                sleep_motor.update(state)
+
             alert_now = state == "POSSIBLE_SLEEP" and not tracker.alert_latched
             if alert_now:
                 tracker.alert_latched = True
-                print("ALERT: 3秒相当の確認済み閉眼を検知（ベルはまだ鳴らしません）")
+                print("ALERT: 3秒相当の確認済み閉眼を検知")
 
             ear_text = (f"EAR L:{left:.3f} R:{right:.3f} Avg:{avg:.3f} Med:{smooth:.3f}"
                         if smooth is not None else "EAR --")
@@ -555,6 +590,12 @@ def run(args):
     except KeyboardInterrupt:
         print("\nCtrl+C: stopped")
     finally:
+        # Stop before closing camera/stream resources, even on Ctrl+C or errors.
+        if sleep_motor is not None:
+            try:
+                sleep_motor.stop()
+            except Exception as exc:
+                print(f"ERROR: could not stop motor: {exc}", file=sys.stderr)
         if stream_server is not None:
             stream_server.close()
         if mesh is not None:
@@ -576,6 +617,7 @@ def parse_args():
     parser.add_argument("--test", action="store_true", help="Take one camera photo and exit")
     parser.add_argument("--self-test", action="store_true", help="Test processing logic without camera")
     parser.add_argument("--face-only", action="store_true", help="OpenCV face-only test")
+    parser.add_argument("--no-motor", action="store_true", help="Disable Build HAT motor control")
     parser.add_argument("--headless", action="store_true", help="Run without local GUI (SSH)")
     parser.add_argument("--stream", action="store_true", help="Stream annotated MJPEG for VLC/browser over SSH")
     parser.add_argument("--port", type=int, default=8888, help="Loopback-only MJPEG HTTP port (default: 8888)")
