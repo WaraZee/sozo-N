@@ -3,8 +3,13 @@
 企画書の例は10%。2026-10-23 の実験（logs/compare_20261023.png）で、
 課題中は最大2.4%しか下がらず、目を閉じると15.5%まで下がったので、
 どちらにも余裕のある8%（60秒平均）にした。
+
+バンドを外すと心拍数 0 が届く。2026-11-06 の実験ではこれで平均が下がり「居眠り」になってしまったので、
+MIN_BPM 未満は「取れない」として、平均にも起きている時の値にも入れない。
 """
 from heart_rate import average
+
+MIN_BPM = 30  # これより小さい値は、バンドを外したなどで取れていないとみなす
 
 
 class HeartSleepJudge:
@@ -13,6 +18,7 @@ class HeartSleepJudge:
       "calibrating" … 最初の baseline_seconds 秒で、起きている時の平均を測っている
       "awake"       … 起きている
       "sleepy"      … 直近 window 秒の平均が、起きている時より drop_ratio 以上下がった
+      "no_reading"  … 心拍数が取れていない（バンドを外した）。取れたら元の判定に戻る
     """
 
     def __init__(self, baseline_seconds=120, window=60, drop_ratio=0.08):
@@ -25,9 +31,18 @@ class HeartSleepJudge:
         self._start = None
         self._calibration = []
         self._samples = []
+        self._state_before_gap = None
 
     def add(self, t, bpm):
         """t 秒（time.monotonic() など）に心拍数 bpm を受け取った"""
+        if bpm < MIN_BPM:
+            if self.state != "no_reading":
+                self._state_before_gap = self.state
+                self.state = "no_reading"
+            return
+        if self.state == "no_reading":
+            self.state = self._state_before_gap or "calibrating"
+
         if self._start is None:
             self._start = t
         if self.baseline is None:
