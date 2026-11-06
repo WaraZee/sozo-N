@@ -1,4 +1,4 @@
-"""検証用: カメラと心拍の記録を4案の判定に通して、いつ鳴るかを比べる
+"""検証用: カメラと心拍の記録を判定（judges.py）に通して、いつ鳴るかを調べる
 
 使い方: python replay.py カメラ.csv 心拍.csv [--from 15:00] [--to 15:20]
   --from / --to で場面（勉強中、寝ている時など）の時間を指定する。
@@ -6,16 +6,31 @@
 import argparse
 import bisect
 import csv
+import os
+import sys
 from datetime import datetime
 
 from camera_log import camera_at, load_rows, row_time
-from judges import JUDGES
+from judges import SleepJudge
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "heart"))
+from sleep_judge import HeartSleepJudge  # noqa: E402
 
 
 def load_heart(path):
     with open(path, encoding="utf-8", newline="") as f:
-        return [{"time": datetime.strptime(r["time"], "%Y-%m-%d %H:%M:%S").timestamp(),
-                 "state": r["state"]} for r in csv.DictReader(f)]
+        return restate([{"time": datetime.strptime(r["time"], "%Y-%m-%d %H:%M:%S").timestamp(),
+                         "bpm": int(r["bpm"]), "state": r["state"]} for r in csv.DictReader(f)])
+
+
+def restate(rows):
+    """記録に残った state ではなく、bpm から今の心拍の判定で決め直す
+    （判定を直したあとでも、前の記録で比べ直せるように）"""
+    judge = HeartSleepJudge()
+    for row in rows:
+        judge.add(row["time"], row["bpm"])
+        row["state"] = judge.state
+    return rows
 
 
 def latest(items, times, t):
@@ -46,7 +61,7 @@ def clock_on(day, text):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="記録を4案の判定に通して比べる")
+    parser = argparse.ArgumentParser(description="記録を判定に通して、いつ鳴るかを調べる")
     parser.add_argument("camera_log")
     parser.add_argument("heart_log")
     parser.add_argument("--from", dest="start", help="場面の始まり（例 15:00）")
@@ -67,14 +82,13 @@ def main():
         return datetime.fromtimestamp(t).strftime("%H:%M:%S")
 
     print("場面: %s 〜 %s（%.1f分）" % (clock(start), clock(end), (end - start) / 60))
-    for key, judge_class in JUDGES.items():
-        judge = judge_class()
-        times = alarm_times(judge, camera_rows, heart_rows, start, end)
-        if times:
-            detail = "%d回 鳴る／最初は %d秒後（%s）" % (len(times), times[0] - start, clock(times[0]))
-        else:
-            detail = "鳴らない"
-        print("  %s: %s" % (judge.name, detail))
+    judge = SleepJudge()
+    times = alarm_times(judge, camera_rows, heart_rows, start, end)
+    if times:
+        detail = "%d回 鳴る／最初は %d秒後（%s）" % (len(times), times[0] - start, clock(times[0]))
+    else:
+        detail = "鳴らない"
+    print("  %s: %s" % (judge.name, detail))
 
 
 if __name__ == "__main__":

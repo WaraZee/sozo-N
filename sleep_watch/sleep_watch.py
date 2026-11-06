@@ -5,8 +5,8 @@
           python ~/sozo-N/camera_motor/camera_sleep.py --headless --flip --log /tmp/maneki_camera.csv
   バンド: python3 ~/sozo-N/heart/heart_rate.py 30
 そのうえで:
-  python3 sleep_watch.py --judge 3            → 案3の判定で見張る
-  python3 sleep_watch.py --judge 3 --dry-run  → 鳴らさず表示だけ（試し用）
+  python3 sleep_watch.py            → 見張る（判定は judges.py）
+  python3 sleep_watch.py --dry-run  → 鳴らさず表示だけ（試し用）
 """
 import argparse
 import json
@@ -16,7 +16,7 @@ import time
 import phone_finder
 from alarm import Alarm
 from camera_log import camera_at, last_row
-from judges import JUDGES, Judge
+from judges import SleepJudge, is_fresh
 
 CAMERA_LOG = "/tmp/maneki_camera.csv"  # camera_sleep.py の --log
 HEART_FILE = "/tmp/maneki_heart.json"  # heart_rate.py が書く
@@ -27,7 +27,7 @@ MOTOR_SPEED = 100
 MIN_VOLTAGE = 7.2
 CHECK_EVERY = 0.5   # 何秒ごとに見るか
 REPORT_EVERY = 10   # 何秒ごとに今の様子を表示するか
-HEART_NAMES = {"calibrating": "測定中", "awake": "ふつう", "sleepy": "下がった"}
+HEART_NAMES = {"calibrating": "測定中", "awake": "ふつう", "sleepy": "下がった", "no_reading": "取れない"}
 EYE_NAMES = {"open": "目を開けている", "uncertain": "目がはっきりしない", "no_face": "顔が見えない"}
 
 
@@ -120,7 +120,7 @@ def describe(now, camera, heart):
         eyes = "目を閉じて%.1f秒" % camera["closed_seconds"]
     else:
         eyes = EYE_NAMES.get(camera["eye_state"], camera["eye_state"])
-    if Judge()._fresh(heart, now):
+    if is_fresh(heart, now):
         beat = "心拍 %s（%s）" % (heart.get("bpm"), HEART_NAMES.get(heart["state"], heart["state"]))
     else:
         beat = "バンドのデータなし"
@@ -129,12 +129,11 @@ def describe(now, camera, heart):
 
 def main():
     parser = argparse.ArgumentParser(description="カメラとバンドで居眠りを見張る")
-    parser.add_argument("--judge", required=True, choices=sorted(JUDGES), help="判定の案（1〜4。judges.py を参照）")
     parser.add_argument("--dry-run", action="store_true", help="モーターもスマホも動かさず表示だけ")
     parser.add_argument("--phone", help="スマホの IP（指定しなければ自動で探す）")
     args = parser.parse_args()
 
-    judge = JUDGES[args.judge]()
+    judge = SleepJudge()
     if args.dry_run:
         alarm = Alarm(DryRunMotor(), DryRunPhone())
     else:
