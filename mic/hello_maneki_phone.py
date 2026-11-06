@@ -22,6 +22,7 @@ SAMPLE_RATE = 16000
 WAKE_WORDS = ["まねきねこ", "招き猫"]
 REPLY = "こんにちは。私は招き猫です"
 CHUNK_SECONDS = 3  # 1回に録音する長さ
+SPEAK_LIMIT = 25   # 読み上げがこれより長くかかったら打ち切る
 
 
 def is_wake_word(text):
@@ -48,28 +49,57 @@ class WakeListener:
         return False
 
 
+def speak_command(text):
+    """スマホで text を読み上げるコマンド
+    途中で止めると読み上げがスマホに残って固まり、そのあと何もしゃべらなくなった（2026-11-06）ので、
+    スマホの側でも SPEAK_LIMIT 秒で打ち切る"""
+    return "timeout %d termux-tts-speak '%s'" % (SPEAK_LIMIT, text)
+
+
+def record_command(seconds):
+    """スマホで seconds 秒録音して、m4a を出力するコマンド
+    録音の時間がたってもすぐにはファイルが書き終わらない（0.4秒待ちでは壊れていた）ので、
+    スマホが録音を終えたのを確かめてから出力する"""
+    return ("f=~/maneki/chunk.m4a; rm -f $f; termux-microphone-record -l %d -f $f >/dev/null; sleep %d; "
+            "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do "
+            "termux-microphone-record -i | grep -q '\"isRecording\": true' || break; sleep 0.2; done; "
+            "sleep 0.3; cat $f" % (seconds, seconds))
+
+
 class Phone:
     def __init__(self, host):
         self.host = host
 
     def run(self, command, timeout):
         # SSH のつなぎ直しを省く ControlMaster は、出力の受け取りが終わらなくなるので使わない
-        return subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", str(phone_finder.PHONE_PORT),
-             self.host, command], capture_output=True, timeout=timeout)
+        args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", str(phone_finder.PHONE_PORT),
+                self.host, command]
+        try:
+            return subprocess.run(args, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # スマホが返事をしなくても止まらず、録音できなかった扱いで続ける
+            print("（スマホが%d秒たっても終わりませんでした）" % timeout)
+            self.stop_recording_quietly()
+            return subprocess.CompletedProcess(args, 1, b"", b"")
 
-    def record(self):
-        """CHUNK_SECONDS 秒録音して、m4a のデータを返す
-        録音の時間がたってもすぐにはファイルが書き終わらない（0.4秒待ちでは壊れていた）ので、
-        スマホが録音を終えたのを確かめてから受け取る"""
-        command = ("f=~/maneki/chunk.m4a; rm -f $f; termux-microphone-record -l %d -f $f >/dev/null; sleep %d; "
-                   "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do "
-                   "termux-microphone-record -i | grep -q '\"isRecording\": true' || break; sleep 0.2; done; "
-                   "sleep 0.3; cat $f" % (CHUNK_SECONDS, CHUNK_SECONDS))
-        return self.run(command, CHUNK_SECONDS + 20).stdout
+    def stop_recording_quietly(self):
+        try:
+            subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p",
+                            str(phone_finder.PHONE_PORT), self.host, "termux-microphone-record -q"],
+                           capture_output=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def record(self, seconds=CHUNK_SECONDS):
+        """seconds 秒録音して、m4a のデータを返す"""
+        return self.run(record_command(seconds), seconds + 20).stdout
 
     def say(self, text):
-        self.run("termux-tts-speak '%s'" % text, 30)
+        self.run(speak_command(text), 30)
+
+    def say_and_record(self, text, seconds):
+        """しゃべり終わったらすぐ録音する（別々に呼ぶと、つなぎ直す1〜2秒の間に言われた言葉を逃す）"""
+        return self.run("%s; %s" % (speak_command(text), record_command(seconds)), seconds + 40).stdout
 
     def stop_recording(self):
         self.run("termux-microphone-record -q >/dev/null 2>&1", 10)

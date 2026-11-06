@@ -1,6 +1,8 @@
+import subprocess
 import unittest
+from unittest import mock
 
-from hello_maneki_phone import WakeListener, is_wake_word
+from hello_maneki_phone import Phone, WakeListener, is_wake_word, speak_command
 
 
 class WakeWordTest(unittest.TestCase):
@@ -54,6 +56,21 @@ class WakeListenerTest(unittest.TestCase):
         listener.feed(b"...")
         self.assertEqual(recognizer.reset_count, 1)
         self.assertFalse(listener.feed(b"..."))  # 同じ「招き猫」で2回反応しない
+
+
+class SpeakCommandTest(unittest.TestCase):
+    def test_スマホの側でも時間で打ち切る(self):
+        self.assertEqual(speak_command("こんにちは"), "timeout 25 termux-tts-speak 'こんにちは'")
+
+
+class PhoneTimeoutTest(unittest.TestCase):
+    def test_スマホが返事をしなくても止まらず空の録音を返す(self):
+        def fake_run(args, **kwargs):
+            if "termux-microphone-record -q" in args[-1]:
+                return subprocess.CompletedProcess(args, 0, b"", b"")
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        with mock.patch("hello_maneki_phone.subprocess.run", side_effect=fake_run):
+            self.assertEqual(Phone("u0@x").record(), b"")
 
 
 if __name__ == "__main__":
