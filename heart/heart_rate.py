@@ -17,7 +17,8 @@ HR_MEASUREMENT = "00002a37-0000-1000-8000-00805f9b34fb"  # 心拍数の値
 AVERAGE_SECONDS = 30  # 平均をとる長さ（この間隔で表示もする）
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")  # 実験の記録
 STATE_FILE = "/tmp/maneki_heart.json"  # 最新の心拍数と居眠り判定
-STATE_NAMES = {"calibrating": "起きている時の心拍数を測定中", "awake": "起きている", "sleepy": "居眠りかも"}
+STATE_NAMES = {"calibrating": "起きている時の心拍数を測定中", "awake": "起きている", "sleepy": "居眠りかも",
+               "no_reading": "心拍数が取れない（バンドを外したかも）"}
 
 
 def parse_bpm(data):
@@ -49,7 +50,7 @@ async def main(report_seconds=None):
     window = report_seconds or AVERAGE_SECONDS
     from bleak import BleakClient, BleakScanner
     from bleak.exc import BleakError
-    from sleep_judge import HeartSleepJudge
+    from sleep_judge import MIN_BPM, HeartSleepJudge
 
     samples = []
     next_report = time.monotonic() + window
@@ -68,22 +69,27 @@ async def main(report_seconds=None):
         nonlocal next_report
         now = time.monotonic()
         bpm = parse_bpm(data)
-        samples.append((now, bpm))
-        del samples[:-window * 5]  # 古いデータを捨てる
+        if bpm >= MIN_BPM:  # バンドを外したときの 0 は平均に入れない（記録には残す）
+            samples.append((now, bpm))
+            del samples[:-window * 5]  # 古いデータを捨てる
         clock = time.strftime("%H:%M:%S")
         before = judge.state
+        had_baseline = judge.baseline is not None
         judge.add(now, bpm)
+        if not had_baseline and judge.baseline is not None:
+            print("%s  起きている時の平均: %.0f" % (clock, judge.baseline))
         if judge.state != before:
-            if before == "calibrating":
-                print("%s  起きている時の平均: %.0f" % (clock, judge.baseline))
-            print("%s  ★ %s（直近%d秒の平均 %.0f）" % (
-                clock, STATE_NAMES[judge.state], judge.window, judge.recent_average))
+            if judge.state == "no_reading":
+                print("%s  ★ %s" % (clock, STATE_NAMES[judge.state]))
+            else:
+                print("%s  ★ %s（直近%d秒の平均 %.0f）" % (
+                    clock, STATE_NAMES[judge.state], judge.window, judge.recent_average))
         write_state(STATE_FILE, {
             "time": time.time(), "bpm": bpm, "average": judge.recent_average,
             "baseline": judge.baseline, "state": judge.state,
         })
         writer.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), bpm,
-                         "%.1f" % judge.recent_average,
+                         "" if judge.recent_average is None else "%.1f" % judge.recent_average,
                          "" if judge.baseline is None else "%.1f" % judge.baseline,
                          judge.state])
         log.flush()
@@ -91,7 +97,9 @@ async def main(report_seconds=None):
             print("%s  心拍数 %d" % (clock, bpm))
         if now >= next_report:
             avg = average(samples, now, window)
-            if show_each:
+            if avg is None:
+                print("%s  心拍数が取れていません（バンドを確認してください）" % clock)
+            elif show_each:
                 print("  ── 直近%d秒の平均: %.0f" % (window, avg))
             else:
                 print("%s  心拍数 %d（直近%d秒の平均 %.0f）" % (clock, bpm, window, avg))

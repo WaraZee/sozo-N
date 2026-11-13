@@ -13,6 +13,7 @@ Usage (activate the existing camera-env first):
   python camera_sleep.py --headless --duration 30 --snapshot
   python camera_sleep.py                 # Pi desktop only, q to close
   python camera_sleep.py --stream --headless # Windows VLC/browser via SSH tunnel
+  python camera_sleep.py --headless --flip   # Camera mounted upside down
 
 Stop VLC/libcamera-vid before running. No GPIO motor or bell is controlled.
 """
@@ -397,6 +398,7 @@ def run(args):
 
     try:
         import cv2
+        from libcamera import Transform
         from picamera2 import Picamera2
     except ImportError as exc:
         raise RuntimeError("Please check OpenCV and Picamera2 in the camera-env environment") from exc
@@ -425,6 +427,7 @@ def run(args):
         config = camera.create_video_configuration(
             main={"size": (WIDTH, HEIGHT), "format": "RGB888"},
             controls={"FrameRate": CAMERA_FPS},
+            transform=Transform(hflip=args.flip, vflip=args.flip),  # both flips = 180 degrees
         )
         camera.configure(config)
         camera.start()
@@ -581,6 +584,7 @@ def parse_args():
     parser.add_argument("--port", type=int, default=8888, help="Loopback-only MJPEG HTTP port (default: 8888)")
     parser.add_argument("--duration", type=float, default=0, help="Seconds to run (0 = until Ctrl+C)")
     parser.add_argument("--snapshot", action="store_true", help="Save annotated_latest.jpg every ~1 s")
+    parser.add_argument("--flip", action="store_true", help="Rotate the image 180 degrees (camera mounted upside down)")
     parser.add_argument("--log", default="sleep_detection_log_v2.csv", help="CSV output path")
     args = parser.parse_args()
     if args.duration < 0:
