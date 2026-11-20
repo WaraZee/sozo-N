@@ -46,6 +46,7 @@ class Alarm:
                 self._seen_ringing = True
             elif ringing is False and self._seen_ringing:
                 self._finish(now)
+                self.phone.stop()
                 return "released"
         return None
 

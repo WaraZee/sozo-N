@@ -1,6 +1,6 @@
 """hello_maneki.py のスマホ版。スマホのマイクで「招き猫」を聞き取り、スマホのスピーカーで返事する
 
-スマホで3秒ずつ録音して Pi に送り、Pi の Vosk で聞き取る（ネットは要らない）。
+スマホで1秒ずつ録音して Pi に送り、Pi の Vosk で聞き取る（ネットは要らない）。
 Termux からスマホの音声認識（termux-speech-to-text）を呼ぶ方法は、この機種ではすぐ空で終わってしまい使えなかった。
 
 スマホで Termux を開いて sshd を打ってから、Pi で python3 hello_maneki_phone.py
@@ -21,7 +21,7 @@ MODEL_PATH = os.path.expanduser("~/models/vosk-model-small-ja-0.22")
 SAMPLE_RATE = 16000
 WAKE_WORDS = ["まねきねこ", "招き猫"]
 REPLY = "こんにちは。私は招き猫です"
-CHUNK_SECONDS = 3  # 1回に録音する長さ
+CHUNK_SECONDS = 1  # 低遅延。1秒ごとに録音して認識する
 SPEAK_LIMIT = 25   # 読み上げがこれより長くかかったら打ち切る
 
 
@@ -60,7 +60,8 @@ def record_command(seconds):
     """スマホで seconds 秒録音して、m4a を出力するコマンド
     録音の時間がたってもすぐにはファイルが書き終わらない（0.4秒待ちでは壊れていた）ので、
     スマホが録音を終えたのを確かめてから出力する"""
-    return ("f=~/maneki/chunk.m4a; rm -f $f; termux-microphone-record -l %d -f $f >/dev/null; sleep %d; "
+    return ("f=~/maneki/chunk.opus; rm -f $f; "
+            "termux-microphone-record -e opus -b 16000 -r 16000 -c 1 -l %d -f $f >/dev/null; sleep %d; "
             "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do "
             "termux-microphone-record -i | grep -q '\"isRecording\": true' || break; sleep 0.2; done; "
             "sleep 0.3; cat $f" % (seconds, seconds))
@@ -71,9 +72,10 @@ class Phone:
         self.host = host
 
     def run(self, command, timeout):
-        # SSH のつなぎ直しを省く ControlMaster は、出力の受け取りが終わらなくなるので使わない
-        args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", str(phone_finder.PHONE_PORT),
-                self.host, command]
+        args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                "-o", "ControlMaster=auto", "-o", "ControlPersist=60",
+                "-o", "ControlPath=/tmp/maneki-phone-%C",
+                "-p", str(phone_finder.PHONE_PORT), self.host, command]
         try:
             return subprocess.run(args, capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -108,17 +110,29 @@ class Phone:
 def to_pcm(m4a):
     """m4a を Vosk が読める 16kHz・モノラルの生データにする
     m4a は最後まで読まないと中身が分からないので、パイプでは渡せず一度ファイルにする"""
-    with tempfile.NamedTemporaryFile(suffix=".m4a") as f:
+    with tempfile.NamedTemporaryFile(suffix=".opus") as f:
         f.write(m4a)
         f.flush()
-        return subprocess.run(["ffmpeg", "-loglevel", "error", "-i", f.name, "-ar", str(SAMPLE_RATE),
-                               "-ac", "1", "-f", "s16le", "pipe:1"], capture_output=True).stdout
+        return subprocess.run(["ffmpeg", "-nostdin", "-threads", "1", "-loglevel", "error",
+                               "-i", f.name, "-ar", str(SAMPLE_RATE), "-ac", "1",
+                               "-f", "s16le", "pipe:1"], capture_output=True).stdout
+
+
+def has_voice(pcm):
+    """16bitモノラルPCMの平均振幅を見て、ほぼ無音ならVoskを省略する"""
+    if len(pcm) < 2:
+        return False
+    samples = memoryview(pcm).cast("h")
+    if not samples:
+        return False
+    average = sum(abs(sample) for sample in samples) / len(samples)
+    return average >= 300
 
 
 def main():
     from vosk import KaldiRecognizer, Model, SetLogLevel
 
-    verbose = "--verbose" in sys.argv  # 3秒ごとに、何が聞こえたかを表示する
+    verbose = "--verbose" in sys.argv  # 1秒ごとに、何が聞こえたかを表示する
 
     host = phone_finder.locate()
     if host is None:
@@ -137,12 +151,16 @@ def main():
         next_chunk = pool.submit(phone.record)
         while True:
             m4a = next_chunk.result()
-            next_chunk = pool.submit(phone.record)  # 聞き取っている間に、次の3秒を録音しておく
+            next_chunk = pool.submit(phone.record)  # 聞き取っている間に、次の1秒を録音しておく
             if not m4a:
                 print("（録音できませんでした。マイクの権限か、スマホの Termux を確認してください）")
                 continue
             pcm = to_pcm(m4a)
-            woke = listener.feed(pcm)
+            if has_voice(pcm):
+                woke = listener.feed(pcm)
+            else:
+                woke = False
+                listener.last_text = ""
             if verbose:
                 print("%s  %.1f秒の音 → 「%s」" % (time.strftime("%H:%M:%S"), len(pcm) / 2 / SAMPLE_RATE,
                                                  listener.last_text))

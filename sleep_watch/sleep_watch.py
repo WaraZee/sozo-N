@@ -7,6 +7,7 @@
 そのうえで:
   python3 sleep_watch.py            → 見張る（判定は judges.py）
   python3 sleep_watch.py --dry-run  → 鳴らさず表示だけ（試し用）
+  python3 sleep_watch.py --no-phone → スマホなしでモーターだけ。目を開けたら止まる（バンドもなしでよい）
 """
 import argparse
 import json
@@ -52,6 +53,8 @@ class BuildHatMotor:
 class Phone:
     def __init__(self, host):
         self.host = host  # "u0@10.27.74.56" など
+        self.eyes_open = False
+        self.OPEN_STATES = ("open", "uncertain")
 
     def _run(self, command, timeout=15):
         return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", str(PHONE_PORT),
@@ -75,7 +78,12 @@ class Phone:
     def stop(self):
         self._call("~/maneki/stop.sh")
 
+    def see(self, now, camera):
+        self.eyes_open = is_fresh(camera, now) and camera["eye_state"] in self.OPEN_STATES
+
     def is_ringing(self):
+        if self.eyes_open:
+            return False
         try:
             output = self._run("[ -f %s ] && echo ringing || echo stopped" % PHONE_FLAG).stdout
         except subprocess.TimeoutExpired:
@@ -105,6 +113,29 @@ class DryRunPhone:
         return None
 
 
+class NoPhone:
+    """スマホを使わない試験用。カメラで目を開けたことを検出して止める。"""
+
+    # 45度から撮るカメラは、目を開けていても open より uncertain が多い（2026-11-13）。
+    OPEN_STATES = ("open", "uncertain")
+
+    def __init__(self):
+        self.eyes_open = False
+
+    def see(self, now, camera):
+        self.eyes_open = is_fresh(camera, now) and camera["eye_state"] in self.OPEN_STATES
+
+    def wake(self):
+        print("  （スマホなし：目を開けたら止まる）")
+        return True
+
+    def stop(self):
+        pass
+
+    def is_ringing(self):
+        return not self.eyes_open
+
+
 def read_heart():
     try:
         with open(HEART_FILE, encoding="utf-8") as f:
@@ -130,12 +161,18 @@ def describe(now, camera, heart):
 def main():
     parser = argparse.ArgumentParser(description="カメラとバンドで居眠りを見張る")
     parser.add_argument("--dry-run", action="store_true", help="モーターもスマホも動かさず表示だけ")
+    parser.add_argument("--no-phone", action="store_true", help="スマホなしでモーターだけを動かし、目を開けたら止める")
     parser.add_argument("--phone", help="スマホの IP（指定しなければ自動で探す）")
     args = parser.parse_args()
+
+    if args.dry_run and args.no_phone:
+        parser.error("--dry-run と --no-phone は一緒に使えません")
 
     judge = SleepJudge()
     if args.dry_run:
         alarm = Alarm(DryRunMotor(), DryRunPhone())
+    elif args.no_phone:
+        alarm = Alarm(BuildHatMotor(), NoPhone())
     else:
         if args.phone:
             host = "%s@%s" % (phone_finder.PHONE_USER, args.phone)
@@ -154,12 +191,20 @@ def main():
             now = time.time()
             camera = camera_at(last_row(CAMERA_LOG), now)
             heart = read_heart()
+            if args.no_phone:
+                alarm.phone.see(now, camera)
+            elif not args.dry_run:
+                alarm.phone.see(now, camera)
             event = alarm.update(now, judge.update(now, camera, heart))
             clock = time.strftime("%H:%M:%S")
             if event == "start":
                 print("%s  ★ 寝ている！ %s" % (clock, describe(now, camera, heart)))
             elif event == "released":
-                print("%s  ★ 通知が押されたので止めました" % clock)
+                if args.no_phone or getattr(alarm.phone, "eyes_open", False):
+                    release_reason = "目を開けた"
+                else:
+                    release_reason = "通知が押された"
+                print("%s  ★ %sので止めました" % (clock, release_reason))
             elif event == "timeout":
                 print("%s  ★ %d秒たったので止めました" % (clock, alarm.max_seconds))
             if now >= next_report:

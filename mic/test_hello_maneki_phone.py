@@ -2,7 +2,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from hello_maneki_phone import Phone, WakeListener, is_wake_word, speak_command
+from hello_maneki_phone import CHUNK_SECONDS, Phone, WakeListener, has_voice, is_wake_word, speak_command
 
 
 class WakeWordTest(unittest.TestCase):
@@ -63,7 +63,19 @@ class SpeakCommandTest(unittest.TestCase):
         self.assertEqual(speak_command("こんにちは"), "timeout 25 termux-tts-speak 'こんにちは'")
 
 
+class VoiceDetectionTest(unittest.TestCase):
+    def test_無音のPCMはVoskに渡さない(self):
+        self.assertFalse(has_voice(bytes([0, 0]) * 100))
+
+    def test_大きな振幅のPCMは音声とする(self):
+        pcm = (1000).to_bytes(2, "little", signed=True) * 100
+        self.assertTrue(has_voice(pcm))
+
+
 class PhoneTimeoutTest(unittest.TestCase):
+    def test_待ち受け録音は1秒(self):
+        self.assertEqual(CHUNK_SECONDS, 1)
+
     def test_スマホが返事をしなくても止まらず空の録音を返す(self):
         def fake_run(args, **kwargs):
             if "termux-microphone-record -q" in args[-1]:
