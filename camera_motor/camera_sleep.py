@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """Raspberry Pi 4 / Debian Bullseye / OV5647: real-time eye closure test.
 
-Based on camera_ear_compare.py settings that worked on the user's Pi:
 - Picamera2, 640x480, RGB888 (the returned array is OpenCV BGR order)
 - MediaPipe FaceMesh, refine_landmarks=True, FULL 640x480 inference
 - 2D EAR using six points around each eye
@@ -32,7 +31,7 @@ from collections import deque
 from pathlib import Path
 
 WIDTH, HEIGHT = 640, 480
-CAMERA_FPS = 10              # Same initial target FPS as camera_ear_compare.py
+CAMERA_FPS = 10              # Target for real-time processing
 EAR_CLOSED = 0.20            # Preliminary values: calibrate with measured CSV
 EAR_OPEN = 0.25
 DROWSY_SECONDS = 0.8
@@ -54,7 +53,7 @@ CSV_COLUMNS = (
 
 
 def eye_aspect_ratio(landmarks, indices, width, height):
-    """Calculate 2D EAR exactly as in camera_ear_compare.py."""
+    """Calculate 2D EAR from six points around the eye."""
     pts = [(landmarks[i].x * width, landmarks[i].y * height) for i in indices]
     horiz = math.dist(pts[0], pts[3])
     if horiz < 1e-6:
@@ -480,7 +479,7 @@ def run(args):
                 for x, y, w, h in faces:
                     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 225, 0), 2)
             else:
-                # FULL resolution, matching camera_ear_compare.py; no resize.
+                # FULL resolution; no resize.
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 result = mesh.process(rgb)
                 if result.multi_face_landmarks:

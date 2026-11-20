@@ -4,9 +4,6 @@ import subprocess
 import sys
 import time
 
-import RPi.GPIO as GPIO
-from vosk import KaldiRecognizer, Model, SetLogLevel
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "sleep_watch"))
 import phone_finder  # noqa: E402
@@ -30,11 +27,12 @@ TIME_WORDS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "�
 GREETING = "こんにちは。タイマー何分セットする？"
 ACCEPTED = "%s、分かりました"
 FINISHED = "お疲れ様でした。%s経ちました"
+READY_MESSAGE = "起動しました"
 
 
-def make_recognizer(model, words):
-    return KaldiRecognizer(model, SAMPLE_RATE,
-                           json.dumps(words + ["[unk]"], ensure_ascii=False))
+def make_recognizer(model, words, recognizer_factory):
+    return recognizer_factory(model, SAMPLE_RATE,
+                              json.dumps(words + ["[unk]"], ensure_ascii=False))
 
 
 def start_mic():
@@ -56,88 +54,69 @@ def speak(text, phone):
         raise RuntimeError("スマホの読み上げに失敗しました: %s" % detail)
 
 
-def show_whiskers(n):
+def show_whiskers(gpio, n):
     """ひげを左から n 本つけ、残りを消す"""
     for i, pin in enumerate(WHISKER_PINS):
-        GPIO.output(pin, GPIO.HIGH if i < n else GPIO.LOW)
+        gpio.output(pin, gpio.HIGH if i < n else gpio.LOW)
 
 
-def talk(mic, text, phone):
+def talk(mic, text, phone, mic_factory=start_mic):
     """自分の声を聞き取らないよう、マイクを止めてからしゃべり、新しいマイクを返す"""
     mic.terminate()
     mic.wait()
     speak(text, phone)
-    return start_mic()
+    return mic_factory()
 
 
-host = phone_finder.locate()
-if host is None:
-    raise SystemExit("スマホが見つかりません。Termux を開いて sshd を起動してください")
-phone = Phone(host)
-print("スマホスピーカー:", host)
+def run_timer(gpio, phone, wake_recognizer, time_recognizer, mic_factory=start_mic):
+    mic = mic_factory()
+    listening_until = None
+    timer_end = None
+    timer_total = 0
+    timer_label = ""
+    whiskers_on = 0
 
-SetLogLevel(-1)
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(LED_PIN, GPIO.OUT)
-for pin in WHISKER_PINS:
-    GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
+    try:
+        mic = talk(mic, READY_MESSAGE, phone, mic_factory)
+        print("「招き猫」と呼んでください（Ctrl+Cで終了）")
+        while True:
+            data = mic.stdout.read(4000)
+            if not data:
+                break
 
-model = Model(MODEL_PATH)
-wake_recognizer = make_recognizer(model, WAKE_WORDS)
-time_recognizer = make_recognizer(model, TIME_WORDS)
+            if timer_end is not None:
+                n = lit_count(timer_end - time.monotonic(), timer_total, len(WHISKER_PINS))
+                if n != whiskers_on:
+                    show_whiskers(gpio, n)
+                    whiskers_on = n
+                    print("  ひげ残り%d本" % n)
 
-mic = start_mic()
-listening_until = None  # None のときは呼びかけ待ち
-timer_end = None        # None のときはタイマーが動いていない
-timer_total = 0
-timer_label = ""
-whiskers_on = 0
-
-try:
-    mic = talk(mic, "起動しました", phone)
-    print("「招き猫」と呼んでください（Ctrl+Cで終了）")
-    while True:
-        data = mic.stdout.read(4000)
-        if not data:
-            break
-
-        # 残り時間に合わせてひげを1本ずつ消す
-        if timer_end is not None:
-            n = lit_count(timer_end - time.monotonic(), timer_total, len(WHISKER_PINS))
-            if n != whiskers_on:
-                show_whiskers(n)
-                whiskers_on = n
-                print("  ひげ残り%d本" % n)
-
-        # タイマー終了
-        if timer_end is not None and time.monotonic() >= timer_end:
-            GPIO.output(LED_PIN, GPIO.LOW)
-            print("→ タイマー終了、LED OFF")
-            timer_end = None
-            mic = talk(mic, FINISHED % timer_label, phone)
-            wake_recognizer.Reset()
-            time_recognizer.Reset()
-            continue
-
-        if listening_until is None:
-            # 呼びかけ待ち
-            if not wake_recognizer.AcceptWaveform(data):
+            if timer_end is not None and time.monotonic() >= timer_end:
+                gpio.output(LED_PIN, gpio.LOW)
+                print("→ タイマー終了、LED OFF")
+                timer_end = None
+                mic = talk(mic, FINISHED % timer_label, phone, mic_factory)
+                wake_recognizer.Reset()
+                time_recognizer.Reset()
                 continue
-            text = json.loads(wake_recognizer.Result())["text"]
-            if not any(word in text for word in WAKE_WORDS):
-                continue
-            print("認識:", text)
-            mic = talk(mic, GREETING, phone)
-            time_recognizer.Reset()
-            listening_until = time.monotonic() + LISTEN_SECONDS
 
-        else:
-            # 時間の聞き取り中
+            if listening_until is None:
+                if not wake_recognizer.AcceptWaveform(data):
+                    continue
+                text = json.loads(wake_recognizer.Result())["text"]
+                if not any(word in text for word in WAKE_WORDS):
+                    continue
+                print("認識:", text)
+                mic = talk(mic, GREETING, phone, mic_factory)
+                time_recognizer.Reset()
+                listening_until = time.monotonic() + LISTEN_SECONDS
+                continue
+
             timed_out = time.monotonic() > listening_until
             if time_recognizer.AcceptWaveform(data):
                 text = json.loads(time_recognizer.Result())["text"]
             elif timed_out:
-                # 話している途中で時間切れになっても、そこまでに聞き取れた言葉で判断する
+                # 制限時間直前に話していた場合、そこまでの認識結果で判定する。
                 text = json.loads(time_recognizer.FinalResult())["text"]
             else:
                 continue
@@ -150,26 +129,51 @@ try:
                     wake_recognizer.Reset()
                     listening_until = None
                 continue
+
             timer_label = format_duration(seconds)
             print("認識: %s → %d秒" % (text, seconds))
-            mic = talk(mic, ACCEPTED % timer_label, phone)
-
-            # しゃべり終わってからタイマー開始
-            GPIO.output(LED_PIN, GPIO.HIGH)
-            show_whiskers(len(WHISKER_PINS))
+            mic = talk(mic, ACCEPTED % timer_label, phone, mic_factory)
+            # 確認音声が終わってからカウントを開始する。
+            gpio.output(LED_PIN, gpio.HIGH)
+            show_whiskers(gpio, len(WHISKER_PINS))
             whiskers_on = len(WHISKER_PINS)
             print("→ LED ON、ひげ%d本（%s）" % (whiskers_on, timer_label))
             timer_total = seconds
             timer_end = time.monotonic() + seconds
-
             wake_recognizer.Reset()
             listening_until = None
+    except KeyboardInterrupt:
+        pass
+    finally:
+        mic.terminate()
+        gpio.output(LED_PIN, gpio.LOW)
+        show_whiskers(gpio, 0)
 
-except KeyboardInterrupt:
-    pass
 
-finally:
-    mic.terminate()
-    GPIO.output(LED_PIN, GPIO.LOW)
-    show_whiskers(0)
-    GPIO.cleanup()
+def main():
+    import RPi.GPIO as GPIO
+    from vosk import KaldiRecognizer, Model, SetLogLevel
+
+    host = phone_finder.locate()
+    if host is None:
+        raise SystemExit("スマホが見つかりません。Termux を開いて sshd を起動してください")
+    phone = Phone(host)
+    print("スマホスピーカー:", host)
+
+    SetLogLevel(-1)
+    GPIO.setmode(GPIO.BCM)
+    try:
+        GPIO.setup(LED_PIN, GPIO.OUT)
+        for pin in WHISKER_PINS:
+            GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
+
+        model = Model(MODEL_PATH)
+        wake_recognizer = make_recognizer(model, WAKE_WORDS, KaldiRecognizer)
+        time_recognizer = make_recognizer(model, TIME_WORDS, KaldiRecognizer)
+        run_timer(GPIO, phone, wake_recognizer, time_recognizer)
+    finally:
+        GPIO.cleanup()
+
+
+if __name__ == "__main__":
+    main()
