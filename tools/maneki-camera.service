@@ -1,0 +1,18 @@
+[Unit]
+Description=Maneki sleep-detection camera
+After=local-fs.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=sozo
+WorkingDirectory=/home/sozo/sozo-N/camera_motor
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/sozo/camera-env/bin/python /home/sozo/sozo-N/camera_motor/camera_sleep.py --headless --flip --log /tmp/maneki_camera.csv
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

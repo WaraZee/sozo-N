@@ -77,3 +77,25 @@ sudo systemctl enable --now maneki-timer.service
 systemctl status maneki-timer.service
 journalctl -u maneki-timer.service -f
 ```
+
+### 居眠り判定をラズパイ起動時に自動で開始する
+
+カメラ、心拍バンド、監視プログラムを別々のサービスとして起動します。
+心拍バンドの「心拍数の共有」をオンにしてください。バンドのデータがまだない間も、
+カメラの目の状態を使った判定は動作しますが、心拍による補助判定は行われません。
+
+```sh
+sudo install -m 644 ~/sozo-N/tools/maneki-camera.service /etc/systemd/system/maneki-camera.service
+sudo install -m 644 ~/sozo-N/tools/maneki-heart.service /etc/systemd/system/maneki-heart.service
+sudo install -m 644 ~/sozo-N/tools/maneki-sleep-watch.service /etc/systemd/system/maneki-sleep-watch.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now maneki-camera.service maneki-heart.service maneki-sleep-watch.service
+```
+
+`maneki-sleep-watch.service` は居眠り判定時にBuild HATのモーターとスマホのアラームを動かします。
+状態やログは次で確認できます。
+
+```sh
+systemctl status maneki-camera.service maneki-heart.service maneki-sleep-watch.service
+journalctl -fu maneki-camera.service -u maneki-heart.service -u maneki-sleep-watch.service
+```
