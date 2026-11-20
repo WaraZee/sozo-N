@@ -1,21 +1,23 @@
 import json
 import os
 import subprocess
+import sys
 import time
 
 import RPi.GPIO as GPIO
 from vosk import KaldiRecognizer, Model, SetLogLevel
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "sleep_watch"))
+import phone_finder  # noqa: E402
+from hello_maneki_phone import Phone, speak_command  # noqa: E402
 from time_parser import format_duration, parse_duration
 from whiskers import lit_count
 
 LED_PIN = 25
 WHISKER_PINS = [17, 27, 16, 26, 20, 21]  # ひげLED（物理ピン 11/13/36/37/38/40、15番は Build HAT が使う）
 MODEL_PATH = os.path.expanduser("~/models/vosk-model-small-ja-0.22")
-VOICE_PATH = os.path.expanduser("~/models/mei/mei_happy.htsvoice")
-DIC_PATH = "/var/lib/mecab/dic/open-jtalk/naist-jdic"
 MIC_DEVICE = "plughw:CARD=Device,DEV=0"  # USBマイク（arecord -l で確認）
-SPEAKER_DEVICE = "plughw:CARD=Headphones,DEV=0"  # ラズパイのイヤホン端子（aplay -l で確認）
 SAMPLE_RATE = 16000
 LISTEN_SECONDS = 10  # 呼ばれてから時間を待つ長さ
 
@@ -43,13 +45,15 @@ def start_mic():
     )
 
 
-def speak(text):
-    """Open JTalk で音声を作り、スピーカーで再生する"""
+def speak(text, phone):
+    """スマホのスピーカーで読み上げる"""
     print("ねこ:", text)
-    wav = "/tmp/maneki_voice.wav"
-    subprocess.run(["open_jtalk", "-x", DIC_PATH, "-m", VOICE_PATH, "-ow", wav],
-                   input=text.encode("utf-8"), check=True)
-    subprocess.run(["aplay", "-D", SPEAKER_DEVICE, "-q", wav], check=True)
+    result = phone.run(speak_command(text), 30)
+    if result.returncode:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        if not detail:
+            detail = "終了コード %d" % result.returncode
+        raise RuntimeError("スマホの読み上げに失敗しました: %s" % detail)
 
 
 def show_whiskers(n):
@@ -58,13 +62,19 @@ def show_whiskers(n):
         GPIO.output(pin, GPIO.HIGH if i < n else GPIO.LOW)
 
 
-def talk(mic, text):
+def talk(mic, text, phone):
     """自分の声を聞き取らないよう、マイクを止めてからしゃべり、新しいマイクを返す"""
     mic.terminate()
     mic.wait()
-    speak(text)
+    speak(text, phone)
     return start_mic()
 
+
+host = phone_finder.locate()
+if host is None:
+    raise SystemExit("スマホが見つかりません。Termux を開いて sshd を起動してください")
+phone = Phone(host)
+print("スマホスピーカー:", host)
 
 SetLogLevel(-1)
 GPIO.setmode(GPIO.BCM)
@@ -104,7 +114,7 @@ try:
             GPIO.output(LED_PIN, GPIO.LOW)
             print("→ タイマー終了、LED OFF")
             timer_end = None
-            mic = talk(mic, FINISHED % timer_label)
+            mic = talk(mic, FINISHED % timer_label, phone)
             wake_recognizer.Reset()
             time_recognizer.Reset()
             continue
@@ -117,7 +127,7 @@ try:
             if not any(word in text for word in WAKE_WORDS):
                 continue
             print("認識:", text)
-            mic = talk(mic, GREETING)
+            mic = talk(mic, GREETING, phone)
             time_recognizer.Reset()
             listening_until = time.monotonic() + LISTEN_SECONDS
 
@@ -142,7 +152,7 @@ try:
                 continue
             timer_label = format_duration(seconds)
             print("認識: %s → %d秒" % (text, seconds))
-            mic = talk(mic, ACCEPTED % timer_label)
+            mic = talk(mic, ACCEPTED % timer_label, phone)
 
             # しゃべり終わってからタイマー開始
             GPIO.output(LED_PIN, GPIO.HIGH)

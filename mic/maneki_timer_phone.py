@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "whisker"))
-from hello_maneki_phone import MODEL_PATH, SAMPLE_RATE, WAKE_WORDS, Phone, WakeListener, to_pcm  # noqa: E402
+from hello_maneki_phone import MODEL_PATH, SAMPLE_RATE, WAKE_WORDS, Phone, WakeListener, has_voice, to_pcm  # noqa: E402
 from time_parser import format_duration, parse_duration  # noqa: E402
 from whiskers import lit_count  # noqa: E402
 
@@ -116,18 +116,23 @@ def main():
         next_chunk = pool.submit(phone.record)
         while True:
             m4a = next_chunk.result()
-            next_chunk = pool.submit(phone.record)  # 聞き取っている間に、次の3秒を録音しておく
+            next_chunk = pool.submit(phone.record)  # 聞き取っている間に、次の1秒を録音しておく
             if not m4a:
                 print("（録音できませんでした。マイクの権限か、スマホの Termux を確認してください）")
                 continue
-            woke = listener.feed(to_pcm(m4a))
+            pcm = to_pcm(m4a)
+            if has_voice(pcm):
+                woke = listener.feed(pcm)
+            else:
+                woke = False
+                listener.last_text = ""
             if verbose:
                 print("%s  「%s」" % (time.strftime("%H:%M:%S"), listener.last_text))
             if not woke:
                 continue
 
             print("%s  呼ばれた" % time.strftime("%H:%M:%S"))
-            # 次の3秒の録音はもう始まっているので、止めて捨ててから聞く（マイクは同時に1つしか使えない）
+            # 次の1秒の録音はもう始まっているので、止めて捨ててから聞く（マイクは同時に1つしか使えない）
             phone.stop_recording()
             next_chunk.result()
             seconds = None

@@ -61,7 +61,7 @@ class AlarmTest(unittest.TestCase):
         self.phone.ringing = False
         self.assertEqual(self.alarm.update(102, False), "released")
         self.assertEqual(self.motor.calls, ["start", "stop"])
-        self.assertEqual(self.phone.calls, ["wake"])  # スマホはもう止まっている
+        self.assertEqual(self.phone.calls, ["wake", "stop"])
 
     def test_スマホを確認するのは数秒おき(self):
         self.alarm.update(100, True)
