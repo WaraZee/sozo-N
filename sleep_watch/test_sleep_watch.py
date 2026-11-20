@@ -1,8 +1,14 @@
 import unittest
+from unittest import mock
 
 from alarm import Alarm
 from judges import SleepJudge
-from sleep_watch import NoPhone, Phone, should_trigger_sleep_alarm
+from sleep_watch import (
+    NoPhone,
+    Phone,
+    should_trigger_sleep_alarm,
+    update_alarm_for_timer,
+)
 
 
 class FakeMotor:
@@ -63,6 +69,55 @@ class PhoneEyeTest(unittest.TestCase):
         phone = Phone("u0@192.0.2.1")
         phone.see(100, self.camera("no_face"))
         self.assertFalse(phone.eyes_open)
+
+
+class AlarmCancelTest(unittest.TestCase):
+    def test_timer_end_cancels_an_active_alarm(self):
+        motor = FakeMotor()
+        phone = unittest.mock.Mock()
+        phone.wake.return_value = True
+        phone.is_ringing.return_value = True
+        alarm = Alarm(motor, phone)
+
+        self.assertEqual(alarm.update(100, True), "start")
+        self.assertEqual(alarm.cancel(101), "cancelled")
+        self.assertFalse(alarm.ringing)
+        self.assertEqual(motor.calls, ["start", "stop"])
+        phone.stop.assert_called_once_with()
+
+
+class TimerGatingTest(unittest.TestCase):
+    def test_closed_eyes_do_not_trigger_outside_timer(self):
+        motor = FakeMotor()
+        alarm = Alarm(motor, mock.Mock())
+        judge = SleepJudge()
+        camera = {"time": 100, "eye_state": "closed", "closed_seconds": 20}
+
+        event = update_alarm_for_timer(alarm, judge, 100, camera, None, False)
+
+        self.assertIsNone(event)
+        self.assertFalse(alarm.ringing)
+        self.assertEqual(motor.calls, [])
+
+    def test_timer_end_cancels_a_ringing_alarm(self):
+        motor = FakeMotor()
+        phone = mock.Mock()
+        phone.wake.return_value = True
+        phone.is_ringing.return_value = True
+        alarm = Alarm(motor, phone)
+        judge = SleepJudge()
+        camera = {"time": 100, "eye_state": "closed", "closed_seconds": 20}
+
+        self.assertEqual(
+            update_alarm_for_timer(alarm, judge, 100, camera, None, True),
+            "start",
+        )
+        self.assertEqual(
+            update_alarm_for_timer(alarm, judge, 101, camera, None, False),
+            "cancelled",
+        )
+        self.assertFalse(alarm.ringing)
+        phone.stop.assert_called_once_with()
 
 
 class RequireHeartTest(unittest.TestCase):
