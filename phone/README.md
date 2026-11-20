@@ -54,7 +54,26 @@ ssh -p 8022 u0@スマホのIP 'sh -n ~/maneki/wake.sh && sh -n ~/maneki/stop.sh'
 
 タイマーの音声入力と認識はラズパイのUSBマイクで行い、案内と終了音声だけスマホのスピーカーから読み上げます。
 スマホでTermuxとTermux:APIを使える状態にし、`sshd`を起動してから、ラズパイで実行します。
+音声認識の準備ができると、スマホが「起動しました」と読み上げます。
 
 ```sh
 python3 ~/sozo-N/mic/maneki_timer.py
+```
+
+### ラズパイ起動時に自動で待ち受ける
+
+ラズパイで一度だけ次を実行すると、起動時にタイマーが開始し、停止するまで自動で再起動します。
+スマホのTermux/`sshd`がまだ使えない場合も、タイマーは10秒おきに再試行します。
+
+```sh
+sudo install -m 644 ~/sozo-N/tools/maneki-timer.service /etc/systemd/system/maneki-timer.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now maneki-timer.service
+```
+
+状態とログは次で確認できます。
+
+```sh
+systemctl status maneki-timer.service
+journalctl -u maneki-timer.service -f
 ```

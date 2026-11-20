@@ -93,9 +93,9 @@ timer_total = 0
 timer_label = ""
 whiskers_on = 0
 
-print("「招き猫」と呼んでください（Ctrl+Cで終了）")
-
 try:
+    mic = talk(mic, "起動しました", phone)
+    print("「招き猫」と呼んでください（Ctrl+Cで終了）")
     while True:
         data = mic.stdout.read(4000)
         if not data:
