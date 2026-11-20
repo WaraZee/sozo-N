@@ -27,7 +27,7 @@ TIME_WORDS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "�
               "二分", "三分", "十分",
               "分", "ふん", "ぷん", "秒", "時間", "半", "タイマー", "セット"]
 
-GREETING = "こんにちは。金子さん。タイマー何分セットする？"
+GREETING = "こんにちは。タイマー何分セットする？"
 ACCEPTED = "%s、分かりました"
 FINISHED = "お疲れ様でした。%s経ちました"
 
@@ -93,9 +93,9 @@ timer_total = 0
 timer_label = ""
 whiskers_on = 0
 
-print("「招き猫」と呼んでください（Ctrl+Cで終了）")
-
 try:
+    mic = talk(mic, "起動しました", phone)
+    print("「招き猫」と呼んでください（Ctrl+Cで終了）")
     while True:
         data = mic.stdout.read(4000)
         if not data:
