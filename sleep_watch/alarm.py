@@ -55,6 +55,13 @@ class Alarm:
         self._quiet_until = now + self.quiet_seconds
         self.motor.stop()
 
+    def cancel(self, now):
+        if not self.ringing:
+            return None
+        self._finish(now)
+        self.phone.stop()
+        return "cancelled"
+
     def shutdown(self):
         """プログラムを終えるとき。モーターは必ず止める"""
         was_ringing = self.ringing

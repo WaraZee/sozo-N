@@ -31,6 +31,9 @@ import time
 from collections import deque
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sleep_watch"))
+from timer_state import timer_is_active  # noqa: E402
+
 WIDTH, HEIGHT = 640, 480
 CAMERA_FPS = 10              # Target for real-time processing
 EAR_CLOSED = 0.20            # Preliminary values: calibrate with measured CSV
@@ -439,9 +442,10 @@ def run(args):
             transform=Transform(hflip=args.flip, vflip=args.flip),  # both flips = 180 degrees
         )
         camera.configure(config)
-        camera.start()
-        camera_started = True
-        time.sleep(1)
+        if not args.timer_gated:
+            camera.start()
+            camera_started = True
+            time.sleep(1)
 
         if args.test:
             frame = camera.capture_array("main")
@@ -468,9 +472,57 @@ def run(args):
         started_at = time.monotonic()
         print("Started. Ctrl+C to stop; q when using a Pi desktop window.")
         print("NOTE: Alert is text-only. No GPIO/bell/motor is driven.")
+        timer_state_error = False
         while not stop_requested:
             if args.duration and time.monotonic() - started_at >= args.duration:
                 break
+            if args.timer_gated:
+                try:
+                    timer_running = timer_is_active(time.time())
+                except (OSError, ValueError) as exc:
+                    if not timer_state_error:
+                        print("タイマー状態を読めません。カメラ判定を停止します: %s" % exc)
+                    timer_state_error = True
+                    timer_running = False
+                else:
+                    timer_state_error = False
+                if not timer_running:
+                    if camera_started:
+                        camera.stop()
+                        camera_started = False
+                        smoother = EyeSmoother()
+                        tracker.reset()
+                    now = time.monotonic()
+                    timestamp = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+                    if (last_state != "TIMER_INACTIVE" or last_log_at is None
+                            or now - last_log_at >= REPORT_EVERY):
+                        row = dict(
+                            datetime=timestamp,
+                            state="TIMER_INACTIVE",
+                            face_detected=0,
+                            eye_state="inactive",
+                            left_EAR="",
+                            right_EAR="",
+                            avg_EAR="",
+                            smoothed_EAR="",
+                            closed_seconds="0.00",
+                            alert_trigger=0,
+                        )
+                        write_csv_row(args.log, row)
+                        print("%s TIMER_INACTIVE" % timestamp, flush=True)
+                        last_log_at = now
+                        last_state = "TIMER_INACTIVE"
+                    time.sleep(0.5)
+                    continue
+                if not camera_started:
+                    camera.start()
+                    camera_started = True
+                    time.sleep(1)
+                    smoother = EyeSmoother()
+                    tracker.reset()
+                    last_state = None
+                    last_log_at = None
+                    continue
             # Picamera2 'RGB888' gives a BGR array for OpenCV on this setup.
             frame = camera.capture_array("main")
             if frame is None:
@@ -595,9 +647,12 @@ def parse_args():
     parser.add_argument("--snapshot", action="store_true", help="Save annotated_latest.jpg every ~1 s")
     parser.add_argument("--flip", action="store_true", help="Rotate the image 180 degrees (camera mounted upside down)")
     parser.add_argument("--log", default="sleep_detection_log_v2.csv", help="CSV output path")
+    parser.add_argument("--timer-gated", action="store_true", help="Run camera analysis only while the voice timer is active")
     args = parser.parse_args()
     if args.duration < 0:
         parser.error("--duration must be >= 0")
+    if args.test and args.timer_gated:
+        parser.error("--test cannot be combined with --timer-gated")
     if not 1024 <= args.port <= 65535:
         parser.error("--port must be between 1024 and 65535")
     return args

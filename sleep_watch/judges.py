@@ -29,6 +29,9 @@ class SleepJudge:
     NO_FACE_WHEN_LOW = 10    # 心拍が下がっているとき、顔が何秒見えなければ寝ているか（うつむき）
 
     def __init__(self):
+        self.reset()
+
+    def reset(self):
         self._no_face_since = None
 
     def update(self, now, camera, heart):

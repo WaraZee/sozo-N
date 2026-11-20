@@ -8,6 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "sleep_watch"))
 import phone_finder  # noqa: E402
 from hello_maneki_phone import Phone, speak_command  # noqa: E402
+from timer_state import clear_timer_state, set_timer_state
 from time_parser import format_duration, parse_duration
 from whiskers import lit_count
 
@@ -68,6 +69,16 @@ def talk(mic, text, phone, mic_factory=start_mic):
     return mic_factory()
 
 
+def update_sleep_monitor(seconds=None):
+    try:
+        if seconds is None:
+            clear_timer_state()
+        else:
+            set_timer_state(seconds)
+    except OSError as exc:
+        print("居眠り判定のタイマー連携に失敗しました: %s" % exc)
+
+
 def run_timer(gpio, phone, wake_recognizer, time_recognizer, mic_factory=start_mic):
     mic = mic_factory()
     listening_until = None
@@ -95,6 +106,7 @@ def run_timer(gpio, phone, wake_recognizer, time_recognizer, mic_factory=start_m
                 gpio.output(LED_PIN, gpio.LOW)
                 print("→ タイマー終了、LED OFF")
                 timer_end = None
+                update_sleep_monitor()
                 mic = talk(mic, FINISHED % timer_label, phone, mic_factory)
                 wake_recognizer.Reset()
                 time_recognizer.Reset()
@@ -140,17 +152,21 @@ def run_timer(gpio, phone, wake_recognizer, time_recognizer, mic_factory=start_m
             print("→ LED ON、ひげ%d本（%s）" % (whiskers_on, timer_label))
             timer_total = seconds
             timer_end = time.monotonic() + seconds
+            update_sleep_monitor(seconds)
             wake_recognizer.Reset()
             listening_until = None
     except KeyboardInterrupt:
         pass
     finally:
+        update_sleep_monitor()
         mic.terminate()
         gpio.output(LED_PIN, gpio.LOW)
         show_whiskers(gpio, 0)
 
 
 def main():
+    update_sleep_monitor()
+
     import RPi.GPIO as GPIO
     from vosk import KaldiRecognizer, Model, SetLogLevel
 

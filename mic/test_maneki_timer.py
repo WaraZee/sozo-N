@@ -11,6 +11,7 @@ from maneki_timer import (
     WHISKER_PINS,
     make_recognizer,
     run_timer,
+    update_sleep_monitor,
 )
 
 
@@ -72,6 +73,15 @@ class TimerStartupTest(unittest.TestCase):
             gpio.outputs,
             [(LED_PIN, gpio.LOW)] + [(pin, gpio.LOW) for pin in WHISKER_PINS],
         )
+
+    def test_sleep_monitor_state_tracks_timer_start_and_stop(self):
+        with mock.patch("maneki_timer.set_timer_state") as set_state, \
+                mock.patch("maneki_timer.clear_timer_state") as clear_state:
+            update_sleep_monitor(30)
+            update_sleep_monitor()
+
+        set_state.assert_called_once_with(30)
+        clear_state.assert_called_once_with()
 
     def test_recognizer_factory_receives_sample_rate_and_restricted_grammar(self):
         calls = []
