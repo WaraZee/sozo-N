@@ -158,10 +158,20 @@ def describe(now, camera, heart):
     return "%s / %s" % (eyes, beat)
 
 
+def should_trigger_sleep_alarm(judge, now, camera, heart, require_heart=False):
+    sleeping = judge.update(now, camera, heart)
+    if require_heart and not (
+        is_fresh(heart, now) and heart.get("state") in ("awake", "sleepy")
+    ):
+        return False
+    return sleeping
+
+
 def main():
     parser = argparse.ArgumentParser(description="カメラとバンドで居眠りを見張る")
     parser.add_argument("--dry-run", action="store_true", help="モーターもスマホも動かさず表示だけ")
     parser.add_argument("--no-phone", action="store_true", help="スマホなしでモーターだけを動かし、目を開けたら止める")
+    parser.add_argument("--require-heart", action="store_true", help="新しい心拍データがない間はアラームを鳴らさない")
     parser.add_argument("--phone", help="スマホの IP（指定しなければ自動で探す）")
     args = parser.parse_args()
 
@@ -195,7 +205,10 @@ def main():
                 alarm.phone.see(now, camera)
             elif not args.dry_run:
                 alarm.phone.see(now, camera)
-            event = alarm.update(now, judge.update(now, camera, heart))
+            sleeping = should_trigger_sleep_alarm(
+                judge, now, camera, heart, args.require_heart
+            )
+            event = alarm.update(now, sleeping)
             clock = time.strftime("%H:%M:%S")
             if event == "start":
                 print("%s  ★ 寝ている！ %s" % (clock, describe(now, camera, heart)))
