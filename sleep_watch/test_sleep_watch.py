@@ -82,6 +82,13 @@ class RequireHeartTest(unittest.TestCase):
             should_trigger_sleep_alarm(judge, 100, self.camera(20), None, True)
         )
 
+    def test_default_mode_uses_camera_when_heart_is_not_configured(self):
+        self.assertTrue(
+            should_trigger_sleep_alarm(
+                SleepJudge(), 100, self.camera(20), None
+            )
+        )
+
     def test_stale_or_calibrating_heart_does_not_enable_alarm(self):
         self.assertFalse(
             should_trigger_sleep_alarm(

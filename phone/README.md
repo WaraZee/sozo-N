@@ -80,34 +80,21 @@ journalctl -u maneki-timer.service -f
 
 ### 居眠り判定をラズパイ起動時に自動で開始する
 
-カメラ、心拍バンド、監視プログラムを別々のサービスとして起動します。
-監視サービスは新しい心拍データを必須とし、未受信・古いデータ・測定中はアラームを鳴らしません。
-これにより、心拍が取れない状態でカメラだけの判定に切り替わることを防ぎます。
-
-心拍サービスは標準BLE Heart Rate Serviceを探します。Xiaomi Smart Band 10をGadgetbridgeと使う場合、
-Gadgetbridgeの[公式資料](https://gadgetbridge.org/basics/topics/xiaomi-protobuf/)では
-第三者アプリからのリアルタイム心拍アクセスはサポートされていません。
-そのため、この組み合わせには別途スマホ経由の中継が必要です。中継が確認できるまでは
-`maneki-sleep-watch.service`を有効化しないでください。
+現時点ではカメラだけで居眠り判定を行い、心拍数の連携は後から導入します。
+閉眼が20秒続くとアラームが動作するため、実機確認ではモーターとスマホのアラームに注意してください。
 
 ```sh
 sudo install -m 644 ~/sozo-N/tools/maneki-camera.service /etc/systemd/system/maneki-camera.service
-sudo install -m 644 ~/sozo-N/tools/maneki-heart.service /etc/systemd/system/maneki-heart.service
 sudo install -m 644 ~/sozo-N/tools/maneki-sleep-watch.service /etc/systemd/system/maneki-sleep-watch.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now maneki-camera.service maneki-heart.service
-```
-
-`maneki-sleep-watch.service` は居眠り判定時にBuild HATのモーターとスマホのアラームを動かします。
-有効な心拍データが `/tmp/maneki_heart.json` に届くことを確認してから、監視サービスを有効にしてください。
-
-```sh
-sudo systemctl enable --now maneki-sleep-watch.service
+sudo systemctl enable --now maneki-camera.service maneki-sleep-watch.service
 ```
 
 状態やログは次で確認できます。
 
 ```sh
-systemctl status maneki-camera.service maneki-heart.service maneki-sleep-watch.service
-journalctl -fu maneki-camera.service -u maneki-heart.service -u maneki-sleep-watch.service
+systemctl status maneki-camera.service maneki-sleep-watch.service
+journalctl -fu maneki-camera.service -u maneki-sleep-watch.service
 ```
+
+心拍数を後から追加する場合は、対応するBLE心拍センサーまたはスマホ中継を用意してから設定します。
