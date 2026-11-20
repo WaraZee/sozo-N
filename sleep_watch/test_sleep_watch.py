@@ -1,7 +1,8 @@
 import unittest
 
 from alarm import Alarm
-from sleep_watch import NoPhone, Phone
+from judges import SleepJudge
+from sleep_watch import NoPhone, Phone, should_trigger_sleep_alarm
 
 
 class FakeMotor:
@@ -62,6 +63,50 @@ class PhoneEyeTest(unittest.TestCase):
         phone = Phone("u0@192.0.2.1")
         phone.see(100, self.camera("no_face"))
         self.assertFalse(phone.eyes_open)
+
+
+class RequireHeartTest(unittest.TestCase):
+    def camera(self, closed_seconds):
+        return {
+            "time": 100,
+            "eye_state": "closed",
+            "closed_seconds": closed_seconds,
+        }
+
+    def heart(self, state, timestamp=100):
+        return {"time": timestamp, "state": state}
+
+    def test_missing_heart_does_not_fall_back_to_camera_only(self):
+        judge = SleepJudge()
+        self.assertFalse(
+            should_trigger_sleep_alarm(judge, 100, self.camera(20), None, True)
+        )
+
+    def test_default_mode_uses_camera_when_heart_is_not_configured(self):
+        self.assertTrue(
+            should_trigger_sleep_alarm(
+                SleepJudge(), 100, self.camera(20), None
+            )
+        )
+
+    def test_stale_or_calibrating_heart_does_not_enable_alarm(self):
+        self.assertFalse(
+            should_trigger_sleep_alarm(
+                SleepJudge(), 100, self.camera(20), self.heart("awake", 80), True
+            )
+        )
+        self.assertFalse(
+            should_trigger_sleep_alarm(
+                SleepJudge(), 100, self.camera(20), self.heart("calibrating"), True
+            )
+        )
+
+    def test_fresh_sleepy_heart_can_trigger_with_short_eye_closure(self):
+        self.assertTrue(
+            should_trigger_sleep_alarm(
+                SleepJudge(), 100, self.camera(3), self.heart("sleepy"), True
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,20 @@
+[Unit]
+Description=Maneki drowsiness monitor and alarm
+Wants=network-online.target maneki-camera.service
+After=network-online.target maneki-camera.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=sozo
+WorkingDirectory=/home/sozo/sozo-N/sleep_watch
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/bin/sh -c 'until ip -o -4 addr show wlan0 | grep -q " inet "; do sleep 2; done'
+ExecStart=/usr/bin/python3 -u /home/sozo/sozo-N/sleep_watch/sleep_watch.py
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

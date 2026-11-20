@@ -24,6 +24,7 @@ import threading
 import csv
 import datetime as dt
 import math
+import signal
 import statistics
 import sys
 import time
@@ -402,6 +403,15 @@ def run(args):
     except ImportError as exc:
         raise RuntimeError("Please check OpenCV and Picamera2 in the camera-env environment") from exc
 
+    stop_requested = False
+
+    def request_stop(_signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+
     mesh = None
     detector = None
     if not args.test:
@@ -458,7 +468,7 @@ def run(args):
         started_at = time.monotonic()
         print("Started. Ctrl+C to stop; q when using a Pi desktop window.")
         print("NOTE: Alert is text-only. No GPIO/bell/motor is driven.")
-        while True:
+        while not stop_requested:
             if args.duration and time.monotonic() - started_at >= args.duration:
                 break
             # Picamera2 'RGB888' gives a BGR array for OpenCV on this setup.
