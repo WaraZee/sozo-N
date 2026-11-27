@@ -3,12 +3,7 @@ from unittest import mock
 
 from alarm import Alarm
 from judges import SleepJudge
-from sleep_watch import (
-    NoPhone,
-    Phone,
-    should_trigger_sleep_alarm,
-    update_alarm_for_timer,
-)
+from sleep_watch import NoPhone, Phone, phone_for_host, should_trigger_sleep_alarm
 
 
 class FakeMotor:
@@ -71,53 +66,51 @@ class PhoneEyeTest(unittest.TestCase):
         self.assertFalse(phone.eyes_open)
 
 
-class AlarmCancelTest(unittest.TestCase):
-    def test_timer_end_cancels_an_active_alarm(self):
+class PhoneFallbackTest(unittest.TestCase):
+    def test_missing_phone_keeps_motor_monitor_available(self):
+        with mock.patch("builtins.print"):
+            self.assertIsInstance(phone_for_host(None), NoPhone)
+
+    def test_found_phone_keeps_phone_alarm_available(self):
+        with mock.patch("builtins.print"):
+            self.assertIsInstance(phone_for_host("u0@192.0.2.1"), Phone)
+
+
+class AlwaysOnMonitoringTest(unittest.TestCase):
+    def test_monitor_rearms_after_wake_without_timer_state(self):
         motor = FakeMotor()
-        phone = unittest.mock.Mock()
-        phone.wake.return_value = True
-        phone.is_ringing.return_value = True
-        alarm = Alarm(motor, phone)
-
-        self.assertEqual(alarm.update(100, True), "start")
-        self.assertEqual(alarm.cancel(101), "cancelled")
-        self.assertFalse(alarm.ringing)
-        self.assertEqual(motor.calls, ["start", "stop"])
-        phone.stop.assert_called_once_with()
-
-
-class TimerGatingTest(unittest.TestCase):
-    def test_closed_eyes_do_not_trigger_outside_timer(self):
-        motor = FakeMotor()
-        alarm = Alarm(motor, mock.Mock())
+        phone = NoPhone()
+        alarm = Alarm(motor, phone, quiet_seconds=0)
         judge = SleepJudge()
-        camera = {"time": 100, "eye_state": "closed", "closed_seconds": 20}
-
-        event = update_alarm_for_timer(alarm, judge, 100, camera, None, False)
-
-        self.assertIsNone(event)
-        self.assertFalse(alarm.ringing)
-        self.assertEqual(motor.calls, [])
-
-    def test_timer_end_cancels_a_ringing_alarm(self):
-        motor = FakeMotor()
-        phone = mock.Mock()
-        phone.wake.return_value = True
-        phone.is_ringing.return_value = True
-        alarm = Alarm(motor, phone)
-        judge = SleepJudge()
-        camera = {"time": 100, "eye_state": "closed", "closed_seconds": 20}
+        closed = {"time": 100, "eye_state": "closed", "closed_seconds": 20}
 
         self.assertEqual(
-            update_alarm_for_timer(alarm, judge, 100, camera, None, True),
+            alarm.update(
+                100, should_trigger_sleep_alarm(judge, 100, closed, None)
+            ),
             "start",
         )
+
+        open_eyes = {"time": 102, "eye_state": "open", "closed_seconds": 0}
+        phone.see(102, open_eyes)
         self.assertEqual(
-            update_alarm_for_timer(alarm, judge, 101, camera, None, False),
-            "cancelled",
+            alarm.update(
+                102, should_trigger_sleep_alarm(judge, 102, open_eyes, None)
+            ),
+            "released",
         )
-        self.assertFalse(alarm.ringing)
-        phone.stop.assert_called_once_with()
+
+        closed_again = {"time": 103, "eye_state": "closed", "closed_seconds": 20}
+        phone.see(103, closed_again)
+        self.assertEqual(
+            alarm.update(
+                103,
+                should_trigger_sleep_alarm(judge, 103, closed_again, None),
+            ),
+            "start",
+        )
+        self.assertTrue(alarm.ringing)
+        self.assertEqual(motor.calls, ["start", "stop", "start"])
 
 
 class RequireHeartTest(unittest.TestCase):

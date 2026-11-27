@@ -18,7 +18,6 @@ import phone_finder
 from alarm import Alarm
 from camera_log import camera_at, last_row
 from judges import SleepJudge, is_fresh
-from timer_state import timer_is_active
 
 CAMERA_LOG = "/tmp/maneki_camera.csv"  # camera_sleep.py の --log
 HEART_FILE = "/tmp/maneki_heart.json"  # heart_rate.py が書く
@@ -159,6 +158,14 @@ def describe(now, camera, heart):
     return "%s / %s" % (eyes, beat)
 
 
+def phone_for_host(host):
+    if host is None:
+        print("スマホが見つかりません。モーターのみで居眠り監視を続けます")
+        return NoPhone()
+    print("スマホ:", host)
+    return Phone(host)
+
+
 def should_trigger_sleep_alarm(judge, now, camera, heart, require_heart=False):
     sleeping = judge.update(now, camera, heart)
     if require_heart and not (
@@ -166,14 +173,6 @@ def should_trigger_sleep_alarm(judge, now, camera, heart, require_heart=False):
     ):
         return False
     return sleeping
-
-
-def update_alarm_for_timer(alarm, judge, now, camera, heart, timer_running, require_heart=False):
-    if not timer_running:
-        judge.reset()
-        return alarm.cancel(now)
-    sleeping = should_trigger_sleep_alarm(judge, now, camera, heart, require_heart)
-    return alarm.update(now, sleeping)
 
 
 def main():
@@ -198,40 +197,26 @@ def main():
         else:
             print("スマホを探しています…")
             host = phone_finder.locate()
-            if host is None:
-                raise SystemExit("スマホが見つかりません。スマホで Termux を開いて sshd を打ってください")
-        print("スマホ:", host)
-        alarm = Alarm(BuildHatMotor(), Phone(host))
+        alarm = Alarm(BuildHatMotor(), phone_for_host(host))
     print("見張り開始: %s（Ctrl+Cで終了）" % judge.name)
 
     next_report = 0
-    timer_state_error = False
     try:
         while True:
             now = time.time()
             camera = camera_at(last_row(CAMERA_LOG), now)
             heart = read_heart()
-            try:
-                timer_running = timer_is_active(now)
-            except (OSError, ValueError) as exc:
-                if not timer_state_error:
-                    print("タイマー状態を読めません。居眠り判定を停止します: %s" % exc)
-                timer_state_error = True
-                timer_running = False
-            else:
-                timer_state_error = False
             if args.no_phone:
                 alarm.phone.see(now, camera)
             elif not args.dry_run:
                 alarm.phone.see(now, camera)
-            event = update_alarm_for_timer(
-                alarm, judge, now, camera, heart, timer_running, args.require_heart
+            sleeping = should_trigger_sleep_alarm(
+                judge, now, camera, heart, args.require_heart
             )
+            event = alarm.update(now, sleeping)
             clock = time.strftime("%H:%M:%S")
             if event == "start":
                 print("%s  ★ 寝ている！ %s" % (clock, describe(now, camera, heart)))
-            elif event == "cancelled":
-                print("%s  ★ タイマー終了のためアラーム停止" % clock)
             elif event == "released":
                 if args.no_phone or getattr(alarm.phone, "eyes_open", False):
                     release_reason = "目を開けた"
